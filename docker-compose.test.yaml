@@ -1,0 +1,16 @@
+services:
+  ts3query-proxy:
+    build: .
+    container_name: ts3query-proxy-test
+    restart: unless-stopped
+    ports:
+      - "19011:10011"
+    environment:
+      - TS6_HOST=teamspeak6-test
+      - TS6_SSH_PORT=10022
+    networks:
+      - ts6test_default
+
+networks:
+  ts6test_default:
+    external: true
