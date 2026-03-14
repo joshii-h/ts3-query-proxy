@@ -1,7 +1,11 @@
+from __future__ import annotations
+
 import asyncio
-import os
+import contextlib
 import logging
+import os
 import sys
+from dataclasses import dataclass
 
 import asyncssh
 
@@ -12,10 +16,21 @@ logging.basicConfig(
 )
 log = logging.getLogger("ts3query-proxy")
 
-TS6_HOST = os.environ.get("TS6_HOST", "teamspeak6")
-TS6_SSH_PORT = int(os.environ.get("TS6_SSH_PORT", "10022"))
-LISTEN_HOST = "0.0.0.0"
-LISTEN_PORT = int(os.environ.get("LISTEN_PORT", "10011"))
+
+@dataclass(frozen=True)
+class Config:
+    ts6_host: str = "teamspeak6"
+    ts6_ssh_port: int = 10022
+    listen_host: str = "0.0.0.0"
+    listen_port: int = 10011
+
+    @classmethod
+    def from_env(cls) -> Config:
+        return cls(
+            ts6_host=os.environ.get("TS6_HOST", "teamspeak6"),
+            ts6_ssh_port=int(os.environ.get("TS6_SSH_PORT", "10022")),
+            listen_port=int(os.environ.get("LISTEN_PORT", "10011")),
+        )
 
 TS3_BANNER = (
     b"TS3\n\r"
@@ -26,12 +41,18 @@ TS3_BANNER = (
 
 
 class ClientHandler:
-    def __init__(self, reader: asyncio.StreamReader, writer: asyncio.StreamWriter):
+    def __init__(
+        self,
+        reader: asyncio.StreamReader,
+        writer: asyncio.StreamWriter,
+        config: Config | None = None,
+    ):
         self.reader = reader
         self.writer = writer
+        self.config = config or Config()
         self.ssh_conn: asyncssh.SSHClientConnection | None = None
         self.ssh_process: asyncssh.SSHClientProcess | None = None
-        self.addr = writer.get_extra_info("peername")
+        self.addr: tuple[str, int] | None = writer.get_extra_info("peername")
 
     async def handle(self) -> None:
         log.info("Client connected from %s", self.addr)
@@ -39,7 +60,7 @@ class ClientHandler:
             self.writer.write(TS3_BANNER)
             await self.writer.drain()
             await self._auth_loop()
-        except asyncio.TimeoutError:
+        except TimeoutError:
             log.warning("Client %s timed out", self.addr)
         except (ConnectionResetError, BrokenPipeError):
             log.info("Client %s disconnected abruptly", self.addr)
@@ -90,11 +111,16 @@ class ClientHandler:
 
     async def _connect_ssh(self, username: str, password: str) -> bool:
         try:
-            log.info("SSH connecting to %s:%d as %s", TS6_HOST, TS6_SSH_PORT, username)
+            log.info(
+                "SSH connecting to %s:%d as %s",
+                self.config.ts6_host,
+                self.config.ts6_ssh_port,
+                username,
+            )
             self.ssh_conn = await asyncio.wait_for(
                 asyncssh.connect(
-                    TS6_HOST,
-                    TS6_SSH_PORT,
+                    self.config.ts6_host,
+                    self.config.ts6_ssh_port,
                     username=username,
                     password=password,
                     known_hosts=None,
@@ -115,7 +141,7 @@ class ClientHandler:
                     banner += chunk
                     if "help" in banner.lower():
                         break
-                except asyncio.TimeoutError:
+                except TimeoutError:
                     break
 
             log.info("SSH session established for %s", self.addr)
@@ -124,11 +150,18 @@ class ClientHandler:
             log.warning("SSH auth failed for %s (bad credentials)", self.addr)
             return False
         except Exception as e:
-            log.error("SSH connection to %s:%d failed: %s", TS6_HOST, TS6_SSH_PORT, e)
+            log.error(
+                "SSH connection to %s:%d failed: %s",
+                self.config.ts6_host,
+                self.config.ts6_ssh_port,
+                e,
+            )
             return False
 
     async def _proxy(self) -> None:
+        assert self.ssh_process is not None
         log.info("Proxying traffic for %s", self.addr)
+        ssh_process = self.ssh_process
 
         async def client_to_ssh() -> None:
             try:
@@ -136,7 +169,7 @@ class ClientHandler:
                     line = await self.reader.readline()
                     if not line:
                         break
-                    self.ssh_process.stdin.write(
+                    ssh_process.stdin.write(
                         line.decode("utf-8", errors="replace")
                     )
             except (ConnectionResetError, BrokenPipeError):
@@ -145,7 +178,7 @@ class ClientHandler:
         async def ssh_to_client() -> None:
             try:
                 while True:
-                    data = await self.ssh_process.stdout.read(4096)
+                    data = await ssh_process.stdout.read(4096)
                     if not data:
                         break
                     raw = data.encode() if isinstance(data, str) else data
@@ -161,12 +194,9 @@ class ClientHandler:
         done, pending = await asyncio.wait(tasks, return_when=asyncio.FIRST_COMPLETED)
         for t in pending:
             t.cancel()
-        # Await cancelled tasks to suppress warnings
         for t in pending:
-            try:
+            with contextlib.suppress(asyncio.CancelledError):
                 await t
-            except asyncio.CancelledError:
-                pass
 
     async def _cleanup(self) -> None:
         try:
@@ -191,16 +221,27 @@ def _sanitize(cmd: str) -> str:
 
 
 async def handle_client(
-    reader: asyncio.StreamReader, writer: asyncio.StreamWriter
+    reader: asyncio.StreamReader,
+    writer: asyncio.StreamWriter,
+    config: Config | None = None,
 ) -> None:
-    handler = ClientHandler(reader, writer)
+    handler = ClientHandler(reader, writer, config)
     await handler.handle()
 
 
 async def main() -> None:
-    server = await asyncio.start_server(handle_client, LISTEN_HOST, LISTEN_PORT)
-    log.info("TS3 Query Proxy listening on %s:%d", LISTEN_HOST, LISTEN_PORT)
-    log.info("Forwarding to %s:%d (SSH Query)", TS6_HOST, TS6_SSH_PORT)
+    config = Config.from_env()
+
+    async def _on_connect(
+        reader: asyncio.StreamReader, writer: asyncio.StreamWriter
+    ) -> None:
+        await handle_client(reader, writer, config)
+
+    server = await asyncio.start_server(
+        _on_connect, config.listen_host, config.listen_port
+    )
+    log.info("TS3 Query Proxy listening on %s:%d", config.listen_host, config.listen_port)
+    log.info("Forwarding to %s:%d (SSH Query)", config.ts6_host, config.ts6_ssh_port)
     async with server:
         await server.serve_forever()
 
