@@ -33,6 +33,23 @@ The proxy expects a TeamSpeak 6 server reachable at hostname `teamspeak6` on por
 | `TS6_SSH_PORT` | `10022` | TS6 SSH query port |
 | `LISTEN_PORT` | `10011` | Port the proxy listens on |
 
+## Important: query_ip_allowlist
+
+TeamSpeak 6 restricts which IPs can use the ServerQuery interface. The proxy container's IP (its Docker network IP) **must** be listed in the TS6 server's `query_ip_allowlist.txt`:
+
+```bash
+# Find the proxy container's subnet (e.g. 172.18.0.0/16)
+docker network inspect your_ts6_network --format '{{range .IPAM.Config}}{{.Subnet}}{{end}}'
+
+# Add it to the allowlist inside the TS6 container
+docker exec teamspeak6 sh -c 'echo "172.18.0.0/16" >> /var/tsserver/query_ip_allowlist.txt'
+
+# Restart TS6 to apply
+docker restart teamspeak6
+```
+
+Without this, logins through the proxy will fail with `error id=520`.
+
 ## Docker Compose example
 
 ```yaml
