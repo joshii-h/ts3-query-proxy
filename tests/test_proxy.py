@@ -186,6 +186,134 @@ class TestIntegration(unittest.IsolatedAsyncioTestCase):
         await writer.drain()
         writer.close()
 
+    async def _login_and_use(self):
+        """Helper: connect, login, select virtual server."""
+        reader, writer = await self._connect()
+        writer.write(f"login {TS6_TEST_USER} {TS6_TEST_PASS}\n".encode())
+        await writer.drain()
+        await asyncio.wait_for(reader.readline(), timeout=10)
+        writer.write(b"use sid=1\n")
+        await writer.drain()
+        await asyncio.wait_for(reader.readline(), timeout=5)
+        return reader, writer
+
+    async def _send_cmd(self, reader, writer, cmd):
+        """Send a command and return the full response including error line."""
+        writer.write(f"{cmd}\n".encode())
+        await writer.drain()
+        data = b""
+        for _ in range(20):
+            chunk = await asyncio.wait_for(reader.readline(), timeout=5)
+            data += chunk
+            if b"error id=" in chunk:
+                break
+        return data
+
+    async def test_channellist_and_channelinfo(self):
+        reader, writer = await self._login_and_use()
+
+        # Get channel list and extract first channel ID
+        data = await self._send_cmd(reader, writer, "channellist")
+        self.assertIn(b"error id=0", data)
+        self.assertIn(b"cid=", data)
+
+        # Extract first cid
+        for part in data.decode(errors="replace").split("|")[0].split():
+            if part.startswith("cid="):
+                cid = part.split("=")[1]
+                break
+
+        # channelinfo with valid cid
+        data = await self._send_cmd(reader, writer, f"channelinfo cid={cid}")
+        self.assertIn(b"error id=0", data)
+        self.assertIn(b"channel_name=", data)
+
+        writer.write(b"quit\n")
+        await writer.drain()
+        writer.close()
+
+    async def test_ban_add_list_delete(self):
+        reader, writer = await self._login_and_use()
+
+        # Add a temporary ban
+        data = await self._send_cmd(reader, writer, "banadd ip=254.253.252.251 banreason=proxytest time=10")
+        self.assertIn(b"error id=0", data)
+        self.assertIn(b"banid=", data)
+
+        # Extract ban ID
+        banid = None
+        for part in data.decode(errors="replace").split():
+            if part.startswith("banid="):
+                banid = part.split("=")[1].strip()
+                break
+
+        # List bans
+        data = await self._send_cmd(reader, writer, "banlist")
+        self.assertIn(b"error id=0", data)
+        self.assertIn(b"ip=254.253.252.251", data)
+
+        # Delete the ban
+        data = await self._send_cmd(reader, writer, f"bandel banid={banid}")
+        self.assertIn(b"error id=0", data)
+
+        writer.write(b"quit\n")
+        await writer.drain()
+        writer.close()
+
+    async def test_servergrouplist(self):
+        reader, writer = await self._login_and_use()
+        data = await self._send_cmd(reader, writer, "servergrouplist")
+        self.assertIn(b"error id=0", data)
+        self.assertIn(b"name=", data)
+        writer.write(b"quit\n")
+        await writer.drain()
+        writer.close()
+
+    async def test_whoami(self):
+        reader, writer = await self._login_and_use()
+        data = await self._send_cmd(reader, writer, "whoami")
+        self.assertIn(b"error id=0", data)
+        self.assertIn(b"virtualserver_id=1", data)
+        writer.write(b"quit\n")
+        await writer.drain()
+        writer.close()
+
+    async def test_clientlist(self):
+        reader, writer = await self._login_and_use()
+        data = await self._send_cmd(reader, writer, "clientlist")
+        self.assertIn(b"error id=0", data)
+        self.assertIn(b"client_nickname=", data)
+        writer.write(b"quit\n")
+        await writer.drain()
+        writer.close()
+
+    async def test_hostinfo(self):
+        reader, writer = await self._login_and_use()
+        data = await self._send_cmd(reader, writer, "hostinfo")
+        self.assertIn(b"error id=0", data)
+        self.assertIn(b"instance_uptime=", data)
+        writer.write(b"quit\n")
+        await writer.drain()
+        writer.close()
+
+    async def test_permissionlist(self):
+        reader, writer = await self._login_and_use()
+        data = await self._send_cmd(reader, writer, "permissionlist")
+        self.assertIn(b"error id=0", data)
+        self.assertIn(b"permname=", data)
+        writer.write(b"quit\n")
+        await writer.drain()
+        writer.close()
+
+    async def test_logview(self):
+        reader, writer = await self._login_and_use()
+        data = await self._send_cmd(reader, writer, "logview lines=3")
+        self.assertIn(b"error id=0", data)
+        self.assertIn(b"last_pos=", data)
+        writer.write(b"quit\n")
+        await writer.drain()
+        writer.close()
+
 
 if __name__ == "__main__":
     unittest.main()
