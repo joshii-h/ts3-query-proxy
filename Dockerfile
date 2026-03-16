@@ -1,8 +1,9 @@
 FROM python:3.12-slim
 
+RUN pip install --no-cache-dir asyncssh
+
 WORKDIR /app
-COPY pyproject.toml proxy.py ./
-RUN pip install --no-cache-dir .
+COPY proxy.py .
 
 EXPOSE 10011
 CMD ["python", "-u", "proxy.py"]
