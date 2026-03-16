@@ -1,0 +1,22 @@
+name: Build ts3query-proxy
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Clone repo
+        run: git clone --depth 1 https://git.joshuahirsig.xyz/docker/ts3query-proxy.git .
+
+      - name: Install Docker CLI
+        run: apt-get update -qq && apt-get install -y -qq ca-certificates curl gnupg >/dev/null && install -m 0755 -d /etc/apt/keyrings && curl -fsSL https://download.docker.com/linux/debian/gpg -o /etc/apt/keyrings/docker.asc && echo "deb [arch=amd64 signed-by=/etc/apt/keyrings/docker.asc] https://download.docker.com/linux/debian bookworm stable" > /etc/apt/sources.list.d/docker.list && apt-get update -qq && apt-get install -y -qq docker-ce-cli >/dev/null
+
+      - name: Build and push
+        run: |
+          echo "${{ secrets.REGISTRY_TOKEN }}" | docker login git.joshuahirsig.xyz -u joshii --password-stdin
+          docker build -t git.joshuahirsig.xyz/docker/ts3query-proxy:latest .
+          docker push git.joshuahirsig.xyz/docker/ts3query-proxy:latest
